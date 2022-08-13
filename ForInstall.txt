@@ -5,3 +5,5 @@ latexmk - build PDF from LaTeX
 sxhkd - keyboard demon
 zathura + mupdf + zathura-pdf-mupdf - pdf reader
 nsxiv - image viewer
+anilibria-cli
+mpv - video player

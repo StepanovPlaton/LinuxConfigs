@@ -108,8 +108,8 @@ struct Client {
 	int bw, oldbw;
 	unsigned int tags;
 	int isfixed, isfloating, isurgent, neverfocus, oldstate, isfullscreen;
- 	int floatborderpx;
- 	int hasfloatbw;
+	int floatborderpx;
+	int hasfloatbw;
 	Client *next;
 	Client *snext;
 	Monitor *mon;
@@ -136,10 +136,10 @@ struct Monitor {
 	int by;               /* bar geometry */
 	int mx, my, mw, mh;   /* screen size */
 	int wx, wy, ww, wh;   /* window area  */
- 	int gappih;           /* horizontal gap between windows */
- 	int gappiv;           /* vertical gap between windows */
- 	int gappoh;           /* horizontal outer gaps */
- 	int gappov;           /* vertical outer gaps */
+	int gappih;           /* horizontal gap between windows */
+	int gappiv;           /* vertical gap between windows */
+	int gappoh;           /* horizontal outer gaps */
+	int gappov;           /* vertical outer gaps */
 	unsigned int seltags;
 	unsigned int sellt;
 	unsigned int tagset[2];
@@ -160,8 +160,8 @@ typedef struct {
 	unsigned int tags;
 	int isfloating;
 	int monitor;
- 	int floatx, floaty, floatw, floath;
- 	int floatborderpx;
+	int floatx, floaty, floatw, floath;
+	int floatborderpx;
 } Rule;
 
 typedef struct Systray   Systray;
@@ -201,6 +201,7 @@ static void focusstack(const Arg *arg);
 static Atom getatomprop(Client *c, Atom prop);
 static int getrootptr(int *x, int *y);
 static long getstate(Window w);
+static pid_t getstatusbarpid();
 static unsigned int getsystraywidth();
 static int gettextprop(Window w, Atom atom, char *text, unsigned int size);
 static void grabbuttons(Client *c, int focused);
@@ -355,16 +356,16 @@ applyrules(Client *c)
 		{
 			c->isfloating = r->isfloating;
 			c->tags |= r->tags;
- 			if (r->floatborderpx >= 0) {
- 				c->floatborderpx = r->floatborderpx;
- 				c->hasfloatbw = 1;
- 			}
- 			if (r->isfloating) {
- 				if (r->floatx >= 0) c->x = c->mon->mx + r->floatx;
- 				if (r->floaty >= 0) c->y = c->mon->my + r->floaty;
- 				if (r->floatw >= 0) c->w = r->floatw;
- 				if (r->floath >= 0) c->h = r->floath;
- 			}
+			if (r->floatborderpx >= 0) {
+				c->floatborderpx = r->floatborderpx;
+				c->hasfloatbw = 1;
+			}
+			if (r->isfloating) {
+				if (r->floatx >= 0) c->x = c->mon->mx + r->floatx;
+				if (r->floaty >= 0) c->y = c->mon->my + r->floaty;
+				if (r->floatw >= 0) c->w = r->floatw;
+				if (r->floath >= 0) c->h = r->floath;
+			}
 			for (m = mons; m && m->num != r->monitor; m = m->next);
 			if (m)
 				c->mon = m;
@@ -487,7 +488,7 @@ buttonpress(XEvent *e)
 	Client *c;
 	Monitor *m;
 	XButtonPressedEvent *ev = &e->xbutton;
-	char *text, *s, ch;
+ 	char *text, *s, ch;
 
 	click = ClkRootWin;
 	/* focus monitor if necessary */
@@ -506,9 +507,23 @@ buttonpress(XEvent *e)
 			arg.ui = 1 << i;
 		} else if (ev->x < x + blw)
 			click = ClkLtSymbol;
-		else if (ev->x > selmon->ww - (int)TEXTW(stext) - getsystraywidth())
+		else if (ev->x > selmon->ww - statusw - getsystraywidth()) {
+ 			x = selmon->ww - statusw;
 			click = ClkStatusText;
-		else
+ 			statussig = 0;
+ 			for (text = s = stext; *s && x <= ev->x; s++) {
+ 				if ((unsigned char)(*s) < ' ') {
+ 					ch = *s;
+ 					*s = '\0';
+ 					x += TEXTW(text) - lrpad;
+ 					*s = ch;
+ 					text = s + 1;
+ 					if (x >= ev->x)
+ 						break;
+ 					statussig = ch;
+ 				}
+ 			}
+ 		} else
 			click = ClkWinTitle;
 	} else if ((c = wintoclient(ev->window))) {
 		focus(c);
@@ -761,10 +776,10 @@ createmon(void)
 	m->nmaster = nmaster;
 	m->showbar = showbar;
 	m->topbar = topbar;
- 	m->gappih = gappih;
- 	m->gappiv = gappiv;
- 	m->gappoh = gappoh;
- 	m->gappov = gappov;
+	m->gappih = gappih;
+	m->gappiv = gappiv;
+	m->gappoh = gappoh;
+	m->gappov = gappov;
 	m->lt[0] = &layouts[0];
 	m->lt[1] = &layouts[1 % LENGTH(layouts)];
 	strncpy(m->ltsymbol, layouts[0].symbol, sizeof m->ltsymbol);
@@ -841,9 +856,26 @@ drawbar(Monitor *m)
 
 	/* draw status first so it can be overdrawn by tags later */
 	if (m == selmon) { /* status is only drawn on selected monitor */
+ 		char *text, *s, ch;
 		drw_setscheme(drw, scheme[SchemeNorm]);
-		tw = TEXTW(stext) - lrpad / 2 + 2; /* 2px extra right padding */
-		drw_text(drw, m->ww - tw - stw, 0, tw, bh, lrpad / 2 - 2, stext, 0);
+ 
+ 		x = 0;
+ 		for (text = s = stext; *s; s++) {
+ 			if ((unsigned char)(*s) < ' ') {
+ 				ch = *s;
+ 				*s = '\0';
+ 				tw = TEXTW(text) - lrpad;
+ 				drw_text(drw, m->ww - statusw + x, 0, tw, bh, 0, text, 0);
+ 				x += tw;
+ 				*s = ch;
+ 				text = s + 1;
+ 			}
+ 		}
+ 		/* tw = TEXTW(text) - lrpad + 2; */
+ 		/* drw_text(drw, m->ww - statusw + x, 0, tw, bh, 0, text, 0); */
+ 		tw = TEXTW(stext) - lrpad / 2 + 2; /* 2px extra right padding */
+ 		drw_text(drw, m->ww - tw - stw, 0, tw, bh, lrpad / 2, stext, 0);
+ 		tw = statusw;
 	}
 
 	resizebarwin(m);
@@ -1505,10 +1537,10 @@ resizeclient(Client *c, int x, int y, int w, int h)
 	c->oldy = c->y; c->y = wc.y = y;
 	c->oldw = c->w; c->w = wc.width = w;
 	c->oldh = c->h; c->h = wc.height = h;
- 	if (c->isfloating && c->hasfloatbw && !c->isfullscreen)
- 		wc.border_width = c->floatborderpx;
- 	else
- 		wc.border_width = c->bw;
+	if (c->isfloating && c->hasfloatbw && !c->isfullscreen)
+		wc.border_width = c->floatborderpx;
+	else
+		wc.border_width = c->bw;
 	XConfigureWindow(dpy, c->win, CWX|CWY|CWWidth|CWHeight|CWBorderWidth, &wc);
 	configure(c);
 	XSync(dpy, False);
@@ -2052,34 +2084,34 @@ tagmon(const Arg *arg)
 void
 tile(Monitor *m)
 {
- 	unsigned int i, n, h, r, oe = enablegaps, ie = enablegaps, mw, my, ty;
+	unsigned int i, n, h, r, oe = enablegaps, ie = enablegaps, mw, my, ty;
 	Client *c;
 
 	for (n = 0, c = nexttiled(m->clients); c; c = nexttiled(c->next), n++);
 	if (n == 0)
 		return;
 
- 	if (smartgaps == n) {
- 		oe = 0; // outer gaps disabled
- 	}
- 
+	if (smartgaps == n) {
+		oe = 0; // outer gaps disabled
+	}
+
 	if (n > m->nmaster)
- 		mw = m->nmaster ? (m->ww + m->gappiv*ie) * m->mfact : 0;
+		mw = m->nmaster ? (m->ww + m->gappiv*ie) * m->mfact : 0;
 	else
- 		mw = m->ww - 2*m->gappov*oe + m->gappiv*ie;
- 	for (i = 0, my = ty = m->gappoh*oe, c = nexttiled(m->clients); c; c = nexttiled(c->next), i++)
+		mw = m->ww - 2*m->gappov*oe + m->gappiv*ie;
+	for (i = 0, my = ty = m->gappoh*oe, c = nexttiled(m->clients); c; c = nexttiled(c->next), i++)
 		if (i < m->nmaster) {
- 			r = MIN(n, m->nmaster) - i;
- 			h = (m->wh - my - m->gappoh*oe - m->gappih*ie * (r - 1)) / r;
- 			resize(c, m->wx + m->gappov*oe, m->wy + my, mw - (2*c->bw) - m->gappiv*ie, h - (2*c->bw), 0);
- 			if (my + HEIGHT(c) + m->gappih*ie < m->wh)
- 			my += HEIGHT(c) + m->gappih*ie;
+			r = MIN(n, m->nmaster) - i;
+			h = (m->wh - my - m->gappoh*oe - m->gappih*ie * (r - 1)) / r;
+			resize(c, m->wx + m->gappov*oe, m->wy + my, mw - (2*c->bw) - m->gappiv*ie, h - (2*c->bw), 0);
+			if (my + HEIGHT(c) + m->gappih*ie < m->wh)
+			my += HEIGHT(c) + m->gappih*ie;
 		} else {
- 			r = n - i;
- 			h = (m->wh - ty - m->gappoh*oe - m->gappih*ie * (r - 1)) / r;
- 			resize(c, m->wx + mw + m->gappov*oe, m->wy + ty, m->ww - mw - (2*c->bw) - 2*m->gappov*oe, h - (2*c->bw), 0);
- 			if (ty + HEIGHT(c) + m->gappih*ie < m->wh)
- 				ty += HEIGHT(c) + m->gappih*ie;
+			r = n - i;
+			h = (m->wh - ty - m->gappoh*oe - m->gappih*ie * (r - 1)) / r;
+			resize(c, m->wx + mw + m->gappov*oe, m->wy + ty, m->ww - mw - (2*c->bw) - 2*m->gappov*oe, h - (2*c->bw), 0);
+			if (ty + HEIGHT(c) + m->gappih*ie < m->wh)
+				ty += HEIGHT(c) + m->gappih*ie;
 		}
 }
 
@@ -2399,23 +2431,23 @@ updatestatus(void)
 {
 	if (!gettextprop(root, XA_WM_NAME, stext, sizeof(stext))) {
 		strcpy(stext, "dwm-"VERSION);
-		statusw = TEXTW(stext) - lrpad + 2;
-	} else {
-		char *text, *s, ch;
-
-		statusw  = 0;
-		for (text = s = stext; *s; s++) {
-			if ((unsigned char)(*s) < ' ') {
-				ch = *s;
-				*s = '\0';
-				statusw += TEXTW(text) - lrpad;
-				*s = ch;
-				text = s + 1;
-			}
-		}
-		statusw += TEXTW(text) - lrpad + 2;
-
-	}
+ 		statusw = TEXTW(stext) - lrpad + 2;
+ 	} else {
+ 		char *text, *s, ch;
+ 
+ 		statusw  = 0;
+ 		for (text = s = stext; *s; s++) {
+ 			if ((unsigned char)(*s) < ' ') {
+ 				ch = *s;
+ 				*s = '\0';
+ 				statusw += TEXTW(text) - lrpad;
+ 				*s = ch;
+ 				text = s + 1;
+ 			}
+ 		}
+ 		statusw += TEXTW(text) - lrpad + 2;
+ 
+ 	}
 	drawbar(selmon);
 	updatesystray();
 }
